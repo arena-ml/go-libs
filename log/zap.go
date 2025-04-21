@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/mattn/go-colorable"
 	"go.opentelemetry.io/contrib/bridges/otelzap"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
 	otelLog "go.opentelemetry.io/otel/log"
@@ -19,7 +20,11 @@ import (
 
 const EnvKeyOTelExporterEndpoint = "OTEL_EXPORTER_OTLP_ENDPOINT"
 const EnvKeyLogLevel = "LOG_LEVEL"
-const EnvOTelLogLevel = "OTEL_LOG_LEVEL"
+const EnvKeyOTelLogLevel = "OTEL_LOG_LEVEL"
+const EnvKeyLogFormat = "LOG_FORMAT"
+const EnvValLogFormatJSON = "json"
+const EnvValLogFormatConsole = "console"
+const EnvKeyLogEnableStackTrace = "LOG_ENABLE_STACKTRACE"
 
 var logger *zap.Logger
 
@@ -34,7 +39,22 @@ func Init(app string, res *resource.Resource, ctx context.Context) error {
 
 	var cores []zapcore.Core
 	level := giveZapLevel()
-	stdOutCore := zapcore.NewCore(zapcore.NewJSONEncoder(zap.NewProductionEncoderConfig()), zapcore.AddSync(os.Stdout), level)
+	enc := zap.NewProductionEncoderConfig()
+	enc.EncodeTime = zapcore.ISO8601TimeEncoder
+	enc.EncodeCaller = zapcore.ShortCallerEncoder
+
+	var encoder zapcore.Encoder
+	logSync := zapcore.AddSync(os.Stdout)
+	if os.Getenv(EnvKeyLogFormat) == EnvValLogFormatConsole || os.Getenv(EnvKeyLogFormat) == "" {
+		logSync = zapcore.AddSync(colorable.NewColorableStdout())
+		enc.EncodeLevel = zapcore.CapitalColorLevelEncoder
+		encoder = zapcore.NewConsoleEncoder(enc)
+	} else {
+		logSync = zapcore.AddSync(os.Stdout)
+		encoder = zapcore.NewJSONEncoder(enc)
+	}
+
+	stdOutCore := zapcore.NewCore(encoder, logSync, level)
 
 	cores = append(cores, stdOutCore)
 
@@ -54,8 +74,14 @@ func Init(app string, res *resource.Resource, ctx context.Context) error {
 		cores = append(cores, otelZapCore)
 	}
 
+	logOpts := []zap.Option{zap.AddCaller()}
+	if os.Getenv(EnvKeyLogEnableStackTrace) == "true" {
+		logOpts = append(logOpts, zap.AddStacktrace(zap.ErrorLevel))
+	}
+
 	logger = zap.New(
 		zapcore.NewTee(cores...),
+		logOpts...,
 	)
 
 	zap.ReplaceGlobals(logger)
@@ -125,7 +151,7 @@ func giveZapLevel() zapcore.Level {
 
 	switch strings.ToLower(lvl) {
 	case "":
-		return zapcore.WarnLevel
+		return zapcore.InfoLevel
 	case "debug":
 		return zapcore.DebugLevel
 	case "info":
@@ -140,7 +166,7 @@ func giveZapLevel() zapcore.Level {
 }
 
 func giveOTelLogLevel() otelLog.Severity {
-	lvl := strings.ToLower(os.Getenv(EnvOTelLogLevel))
+	lvl := strings.ToLower(os.Getenv(EnvKeyOTelLogLevel))
 
 	switch lvl {
 	case "":
